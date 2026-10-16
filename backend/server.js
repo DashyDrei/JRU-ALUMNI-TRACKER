@@ -25,12 +25,13 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+const mysqlUrl = process.env.MYSQL_PUBLIC_URL ? new URL(process.env.MYSQL_PUBLIC_URL) : null;
 const dbPool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'jru_alumni_db',
+  host: mysqlUrl?.hostname || process.env.DB_HOST || 'localhost',
+  port: Number(mysqlUrl?.port || process.env.DB_PORT || 3306),
+  user: mysqlUrl ? decodeURIComponent(mysqlUrl.username) : process.env.DB_USER || 'root',
+  password: mysqlUrl ? decodeURIComponent(mysqlUrl.password) : process.env.DB_PASSWORD || '',
+  database: mysqlUrl ? decodeURIComponent(mysqlUrl.pathname.slice(1)) : process.env.DB_NAME || 'jru_alumni_db',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
