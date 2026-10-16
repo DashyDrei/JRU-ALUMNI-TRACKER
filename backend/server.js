@@ -25,7 +25,8 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const mysqlUrl = process.env.MYSQL_PUBLIC_URL ? new URL(process.env.MYSQL_PUBLIC_URL) : null;
+const configuredMysqlUrl = process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL;
+const mysqlUrl = configuredMysqlUrl ? new URL(configuredMysqlUrl) : null;
 const dbPool = mysql.createPool({
   host: mysqlUrl?.hostname || process.env.DB_HOST || 'localhost',
   port: Number(mysqlUrl?.port || process.env.DB_PORT || 3306),
