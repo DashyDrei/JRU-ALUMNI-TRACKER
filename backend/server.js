@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
 const express = require('express');
 const mysql = require('mysql2/promise');
@@ -38,13 +40,40 @@ const dbPool = mysql.createPool({
   queueLimit: 0
 });
 
+async function initializeEmptyDatabase(connection) {
+  const [tables] = await connection.query('SHOW TABLES');
+  if (tables.length > 0) return false;
+
+  const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  const statements = schema
+    .split(/;\s*(?:\r?\n|$)/)
+    .map(statement => statement.replace(/^--.*$/gm, '').trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    if (/^(CREATE DATABASE|USE|DROP TABLE)\b/i.test(statement)) continue;
+    const safeStatement = statement
+      .replace(/^CREATE TABLE\b/i, 'CREATE TABLE IF NOT EXISTS')
+      .replace(/^INSERT INTO\b/i, 'INSERT IGNORE INTO');
+    await connection.query(safeStatement);
+  }
+
+  return true;
+}
+
 (async () => {
+  let connection;
   try {
-    const connection = await dbPool.getConnection();
+    connection = await dbPool.getConnection();
+    const initialized = await initializeEmptyDatabase(connection);
+    if (initialized) {
+      console.log('✅ Initialized empty MySQL database with alumni schema and seed records.');
+    }
     console.log('✅ Connected to MySQL Database: jru_alumni_db');
-    connection.release();
   } catch (error) {
     console.error('❌ Failed to connect to MySQL database:', error.message);
+  } finally {
+    connection?.release();
   }
 })();
 
