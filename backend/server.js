@@ -1,7 +1,7 @@
-require('dotenv').config();
+const path = require('node:path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const fs = require('node:fs');
-const path = require('node:path');
 const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
 const express = require('express');
 const mysql = require('mysql2/promise');
@@ -9,16 +9,18 @@ const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const ADMIN_PIN = process.env.ADMIN_PIN || '';
-const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET || '';
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://localhost:5174')
+const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
+const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET || 'jru-alumni-admin-token-secret';
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || '')
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
 
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (curl, mobile apps) and, when no explicit
+    // FRONTEND_ORIGIN list is configured, allow any origin.
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Origin is not allowed by CORS.'));
@@ -27,14 +29,14 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const configuredMysqlUrl = process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL;
-const mysqlUrl = configuredMysqlUrl ? new URL(configuredMysqlUrl) : null;
+// Local MySQL connection.
+const dbName = process.env.DB_NAME || 'jru_alumni_db';
 const dbPool = mysql.createPool({
-  host: mysqlUrl?.hostname || process.env.DB_HOST || 'localhost',
-  port: Number(mysqlUrl?.port || process.env.DB_PORT || 3306),
-  user: mysqlUrl ? decodeURIComponent(mysqlUrl.username) : process.env.DB_USER || 'root',
-  password: mysqlUrl ? decodeURIComponent(mysqlUrl.password) : process.env.DB_PASSWORD || '',
-  database: mysqlUrl ? decodeURIComponent(mysqlUrl.pathname.slice(1)) : process.env.DB_NAME || 'jru_alumni_db',
+  host: process.env.DB_HOST || 'localhost',
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: dbName,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
@@ -69,7 +71,7 @@ async function initializeEmptyDatabase(connection) {
     if (initialized) {
       console.log('✅ Initialized empty MySQL database with alumni schema and seed records.');
     }
-    console.log('✅ Connected to MySQL Database: jru_alumni_db');
+    console.log(`✅ Connected to MySQL Database: ${dbName}`);
   } catch (error) {
     console.error('❌ Failed to connect to MySQL database:', error.message);
   } finally {
@@ -308,6 +310,10 @@ app.put('/api/alumni/:id', requireAdmin, async (req, res) => {
       linkedin
     } = req.body;
 
+    if (!fullName || !batchYear || !motto || !collegeKey || !programName) {
+      return res.status(400).json({ error: 'Full name, batch year, college, program, and motto are required.' });
+    }
+
     const yearPrefix = String(batchYear).slice(-2);
     const formattedStudentId = `${yearPrefix}-${studentIdSuffix || '192918'}`;
 
@@ -336,9 +342,9 @@ app.put('/api/alumni/:id', requireAdmin, async (req, res) => {
       programName,
       major || null,
       motto,
-      honor,
+      honor || null,
       academicHighlights || null,
-      avatarUrl,
+      avatarUrl || null,
       email || null,
       linkedin || null,
       id

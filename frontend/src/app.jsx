@@ -3,7 +3,7 @@ import {
   Search, Plus, GraduationCap, Quote, Award, Linkedin, Mail, 
   X, CheckCircle2, BarChart3, Users, Sparkles, SlidersHorizontal, Moon, Sun, 
   ShieldCheck, CheckCircle, Edit3, Trash2, Lock, Key, Upload, 
-  AlertTriangle, Check, Eye
+  AlertTriangle, Check, Eye, Server
 } from 'lucide-react';
 import { COLLEGE_STRUCTURE } from './data/collegeData';
 import { INITIAL_ALUMNI } from './data/initialAlumni';
@@ -19,24 +19,33 @@ export default function App() {
     return INITIAL_ALUMNI;
   });
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+  const defaultApiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+  const [apiBaseUrl, setApiBaseUrl] = useState(() => {
+    try {
+      return localStorage.getItem('JRU_ALUMNI_API_URL') || defaultApiBaseUrl;
+    } catch (e) {
+      return defaultApiBaseUrl;
+    }
+  });
+
+  const fetchAlumniFromDatabase = async (baseUrl = apiBaseUrl) => {
+    try {
+      const response = await fetch(`${baseUrl}/alumni`);
+      if (!response.ok) return false;
+      const data = await response.json();
+      if (data && data.length > 0) {
+        setAlumniList(data);
+      }
+      return true;
+    } catch (error) {
+      console.warn('⚠️ Express MySQL server offline. Operating in local offline mode.');
+      return false;
+    }
+  };
 
   useEffect(() => {
-    const fetchAlumniFromDatabase = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/alumni`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.length > 0) {
-            setAlumniList(data);
-          }
-        }
-      } catch (error) {
-        console.warn('⚠️ Express MySQL server offline. Operating in local offline mode.');
-      }
-    };
     fetchAlumniFromDatabase();
-  }, []);
+  }, [apiBaseUrl]);
 
   useEffect(() => {
     try {
@@ -62,6 +71,8 @@ export default function App() {
   const [isAdminPinModalOpen, setIsAdminPinModalOpen] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
+  const [isApiSettingsOpen, setIsApiSettingsOpen] = useState(false);
+  const [apiUrlInput, setApiUrlInput] = useState('');
 
   const clickCounterRef = useRef(0);
   const clickTimerRef = useRef(null);
@@ -135,7 +146,7 @@ export default function App() {
     e.preventDefault();
     setPinError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/admin/login`, {
+      const response = await fetch(`${apiBaseUrl}/admin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: pinInput })
@@ -160,6 +171,44 @@ export default function App() {
     setAdminToken(null);
     setUserRole('visitor');
     showToast("Returned to Visitor Mode");
+  };
+
+  const handleSaveApiUrl = (e) => {
+    e.preventDefault();
+    const trimmed = apiUrlInput.trim().replace(/\/+$/, '');
+    if (!trimmed) {
+      showToast('Please enter a backend API URL.');
+      return;
+    }
+    try {
+      localStorage.setItem('JRU_ALUMNI_API_URL', trimmed);
+    } catch (err) {
+      console.error('Storage error:', err);
+    }
+    setApiBaseUrl(trimmed);
+    setIsApiSettingsOpen(false);
+    showToast(`Backend set to ${trimmed}`);
+  };
+
+  const handleResetApiUrl = () => {
+    try {
+      localStorage.removeItem('JRU_ALUMNI_API_URL');
+    } catch (err) {
+      console.error('Storage error:', err);
+    }
+    setApiBaseUrl(defaultApiBaseUrl);
+    setIsApiSettingsOpen(false);
+    showToast('Backend URL reset to default.');
+  };
+
+  const handleTestApiUrl = async () => {
+    const trimmed = apiUrlInput.trim().replace(/\/+$/, '');
+    if (!trimmed) {
+      showToast('Please enter a backend API URL.');
+      return;
+    }
+    const ok = await fetchAlumniFromDatabase(trimmed);
+    showToast(ok ? `Connected to ${trimmed}` : `Could not reach ${trimmed}`);
   };
 
   const processImageFile = (file) => {
@@ -271,7 +320,7 @@ export default function App() {
     };
 
     try {
-      const response = await fetch(`${API_BASE_URL}/alumni/${formData.id}`, {
+      const response = await fetch(`${apiBaseUrl}/alumni/${formData.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -305,7 +354,7 @@ export default function App() {
     const name = deletingAlumnus.fullName;
 
     try {
-      const response = await fetch(`${API_BASE_URL}/alumni/${targetId}`, {
+      const response = await fetch(`${apiBaseUrl}/alumni/${targetId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` }
       });
@@ -346,7 +395,7 @@ export default function App() {
 
     let savedEntry;
     try {
-      const response = await fetch(`${API_BASE_URL}/alumni`, {
+      const response = await fetch(`${apiBaseUrl}/alumni`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -471,6 +520,21 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-3">
+            <button
+              onClick={() => {
+                setApiUrlInput(apiBaseUrl);
+                setIsApiSettingsOpen(true);
+              }}
+              className={`p-2.5 rounded-xl border transition-all flex items-center space-x-1.5 ${
+                darkMode 
+                  ? 'bg-slate-800 text-amber-300 border-slate-700 hover:bg-slate-700' 
+                  : 'bg-slate-100 text-slate-800 border-slate-300 hover:bg-slate-200'
+              }`}
+              title="Backend API Connection"
+            >
+              <Server className="w-4 h-4" />
+              <span className="text-xs font-bold hidden sm:inline">Backend</span>
+            </button>
             <button
               onClick={() => setDarkMode(!darkMode)}
               className={`p-2.5 rounded-xl border transition-all flex items-center space-x-1.5 ${
@@ -1145,6 +1209,79 @@ export default function App() {
                   className="w-1/2 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black shadow-md"
                 >
                   Unlock Admin Mode
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isApiSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl relative ${
+            darkMode ? 'bg-slate-900 border-amber-500/40 text-white' : 'bg-white border-slate-300 text-slate-900'
+          }`}>
+            <button 
+              onClick={() => setIsApiSettingsOpen(false)}
+              className={`absolute top-4 right-4 ${darkMode ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center space-y-2 mb-6">
+              <div className="w-12 h-12 rounded-full bg-amber-500/20 border border-amber-400/40 mx-auto flex items-center justify-center">
+                <Server className="w-6 h-6 text-amber-500" />
+              </div>
+              <h3 className={`text-lg font-black ${darkMode ? 'text-white' : 'text-[#0B2545]'}`}>
+                Backend API Connection
+              </h3>
+              <p className={`text-xs font-semibold ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                Point this app at your Express + MySQL backend. Saved in this browser only.
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveApiUrl} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black text-amber-700 dark:text-amber-400 mb-1">Backend API Base URL *</label>
+                <input
+                  type="url"
+                  required
+                  placeholder="http://localhost:5000/api"
+                  value={apiUrlInput}
+                  onChange={(e) => setApiUrlInput(e.target.value)}
+                  className={`w-full p-2.5 rounded-xl border text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                    darkMode ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                  }`}
+                />
+                <p className={`text-[11px] mt-1 ${darkMode ? 'text-slate-400' : 'text-slate-600'}`}>
+                  Include the <span className="font-mono">/api</span> suffix. In use: <span className="font-mono">{apiBaseUrl}</span>
+                </p>
+              </div>
+
+              <div className="flex space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleResetApiUrl}
+                  className={`w-1/3 py-2.5 rounded-xl text-xs font-bold ${
+                    darkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-800'
+                  }`}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTestApiUrl}
+                  className={`w-1/3 py-2.5 rounded-xl text-xs font-bold ${
+                    darkMode ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-800'
+                  }`}
+                >
+                  Test
+                </button>
+                <button
+                  type="submit"
+                  className="w-1/3 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black shadow-md"
+                >
+                  Save
                 </button>
               </div>
             </form>
