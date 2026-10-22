@@ -28,9 +28,17 @@ export default function App() {
     }
   });
 
+  // Helper to ensure all requests skip the ngrok browser warning page
+  const getHeaders = (extra = {}) => ({
+    ...extra,
+    'ngrok-skip-browser-warning': 'true'
+  });
+
   const fetchAlumniFromDatabase = async (baseUrl = apiBaseUrl) => {
     try {
-      const response = await fetch(`${baseUrl}/alumni`);
+      const response = await fetch(`${baseUrl}/alumni`, {
+        headers: getHeaders()
+      });
       if (!response.ok) return false;
       const data = await response.json();
       if (data && data.length > 0) {
@@ -148,7 +156,7 @@ export default function App() {
     try {
       const response = await fetch(`${apiBaseUrl}/admin/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ pin: pinInput })
       });
       const result = await response.json().catch(() => ({}));
@@ -322,10 +330,10 @@ export default function App() {
     try {
       const response = await fetch(`${apiBaseUrl}/alumni/${formData.id}`, {
         method: 'PUT',
-        headers: {
+        headers: getHeaders({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`
-        },
+        }),
         body: JSON.stringify(updatedData)
       });
       const result = await response.json().catch(() => ({}));
@@ -356,7 +364,7 @@ export default function App() {
     try {
       const response = await fetch(`${apiBaseUrl}/alumni/${targetId}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${adminToken}` }
+        headers: getHeaders({ Authorization: `Bearer ${adminToken}` })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -397,10 +405,10 @@ export default function App() {
     try {
       const response = await fetch(`${apiBaseUrl}/alumni`, {
         method: 'POST',
-        headers: {
+        headers: getHeaders({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`
-        },
+        }),
         body: JSON.stringify(newEntry)
       });
       const result = await response.json().catch(() => ({}));
