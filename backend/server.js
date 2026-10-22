@@ -4,7 +4,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const fs = require('node:fs');
 const { createHash, createHmac, timingSafeEqual } = require('node:crypto');
 const express = require('express');
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const cors = require('cors');
 
 const app = express();
@@ -29,22 +29,36 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Local MySQL connection.
-const dbName = process.env.DB_NAME || 'jru_alumni_db';
-const dbPool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: dbName,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+// PostgreSQL connection. Prefer the DATABASE_URL connection string (Render
+// injects it automatically); otherwise use the individual PG* variables.
+const connectionString = process.env.DATABASE_URL || '';
+const databaseLabel = connectionString
+  ? new URL(connectionString).pathname.replace(/^\//, '') || 'jru_alumni_db'
+  : process.env.PGDATABASE || 'jru_alumni_db';
+
+// Render PostgreSQL requires TLS. Enabled by default for DATABASE_URL;
+// set DB_SSL=false to turn it off (e.g. for a local server).
+const useSsl = process.env.DB_SSL ? process.env.DB_SSL !== 'false' : Boolean(connectionString);
+
+const dbPool = new Pool({
+  ...(connectionString
+    ? { connectionString }
+    : {
+        host: process.env.PGHOST || 'localhost',
+        port: Number(process.env.PGPORT || 5432),
+        user: process.env.PGUSER || 'postgres',
+        password: process.env.PGPASSWORD || '',
+        database: process.env.PGDATABASE || 'jru_alumni_db'
+      }),
+  ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+  max: 10
 });
 
-async function initializeEmptyDatabase(connection) {
-  const [tables] = await connection.query('SHOW TABLES');
-  if (tables.length > 0) return false;
+async function initializeEmptyDatabase(client) {
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() LIMIT 1`
+  );
+  if (rows.length > 0) return false;
 
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   const statements = schema
@@ -53,29 +67,28 @@ async function initializeEmptyDatabase(connection) {
     .filter(Boolean);
 
   for (const statement of statements) {
+    // CREATE DATABASE / USE are MySQL-only, and DROP TABLE would destroy data on
+    // every boot. schema.sql already uses IF NOT EXISTS / ON CONFLICT DO NOTHING.
     if (/^(CREATE DATABASE|USE|DROP TABLE)\b/i.test(statement)) continue;
-    const safeStatement = statement
-      .replace(/^CREATE TABLE\b/i, 'CREATE TABLE IF NOT EXISTS')
-      .replace(/^INSERT INTO\b/i, 'INSERT IGNORE INTO');
-    await connection.query(safeStatement);
+    await client.query(statement);
   }
 
   return true;
 }
 
 (async () => {
-  let connection;
+  let client;
   try {
-    connection = await dbPool.getConnection();
-    const initialized = await initializeEmptyDatabase(connection);
+    client = await dbPool.connect();
+    const initialized = await initializeEmptyDatabase(client);
     if (initialized) {
-      console.log('✅ Initialized empty MySQL database with alumni schema and seed records.');
+      console.log('✅ Initialized empty PostgreSQL database with alumni schema and seed records.');
     }
-    console.log(`✅ Connected to MySQL Database: ${dbName}`);
+    console.log(`✅ Connected to PostgreSQL Database: ${databaseLabel}`);
   } catch (error) {
-    console.error('❌ Failed to connect to MySQL database:', error.message);
+    console.error('❌ Failed to connect to PostgreSQL database:', error.message);
   } finally {
-    connection?.release();
+    client?.release();
   }
 })();
 
@@ -147,26 +160,27 @@ app.get('/api/alumni', async (req, res) => {
 
     let query = 'SELECT * FROM alumni WHERE 1=1';
     const queryParams = [];
+    const addParam = (value) => {
+      queryParams.push(value);
+      return `$${queryParams.length}`;
+    };
 
     if (search) {
-      query += ` AND (full_name LIKE ? OR student_id LIKE ? OR motto LIKE ? OR program_name LIKE ? OR major LIKE ?)`;
-      const searchTerm = `%${search}%`;
-      queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
+      const searchParam = addParam(`%${search}%`);
+      query += ` AND (full_name ILIKE ${searchParam} OR student_id ILIKE ${searchParam} OR motto ILIKE ${searchParam} OR program_name ILIKE ${searchParam} OR major ILIKE ${searchParam})`;
     }
 
     if (collegeKey && collegeKey !== 'ALL') {
-      query += ` AND college_key = ?`;
-      queryParams.push(collegeKey);
+      query += ` AND college_key = ${addParam(collegeKey)}`;
     }
 
     if (program && program !== 'ALL') {
-      query += ` AND (CONCAT(program_name, IF(major IS NOT NULL AND major != '', CONCAT(' - ', major), '')) = ? OR program_name = ?)`;
-      queryParams.push(program, program);
+      const programParam = addParam(program);
+      query += ` AND ((program_name || CASE WHEN major IS NOT NULL AND major <> '' THEN ' - ' || major ELSE '' END) = ${programParam} OR program_name = ${programParam})`;
     }
 
     if (startYear && endYear) {
-      query += ` AND batch_year BETWEEN ? AND ?`;
-      queryParams.push(parseInt(startYear), parseInt(endYear));
+      query += ` AND batch_year BETWEEN ${addParam(parseInt(startYear, 10))} AND ${addParam(parseInt(endYear, 10))}`;
     }
 
     if (sortBy === 'batchAsc') {
@@ -177,7 +191,7 @@ app.get('/api/alumni', async (req, res) => {
       query += ` ORDER BY batch_year DESC, full_name ASC`;
     }
 
-    const [rows] = await dbPool.execute(query, queryParams);
+    const { rows } = await dbPool.query(query, queryParams);
 
     const formattedAlumni = rows.map(item => ({
       id: item.id,
@@ -205,7 +219,7 @@ app.get('/api/alumni', async (req, res) => {
 
 app.get('/api/alumni/:id', async (req, res) => {
   try {
-    const [rows] = await dbPool.execute('SELECT * FROM alumni WHERE id = ?', [req.params.id]);
+    const { rows } = await dbPool.query('SELECT * FROM alumni WHERE id = $1', [req.params.id]);
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Alumnus profile not found.' });
     }
@@ -262,14 +276,14 @@ app.post('/api/alumni', requireAdmin, async (req, res) => {
     const sql = `
       INSERT INTO alumni 
       (id, student_id, full_name, batch_year, college_key, program_name, major, motto, honor, academic_highlights, avatar_url, verified, email, linkedin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, $12, $13)
     `;
 
-    await dbPool.execute(sql, [
+    await dbPool.query(sql, [
       newId,
       formattedStudentId,
       fullName,
-      parseInt(batchYear),
+      parseInt(batchYear, 10),
       collegeKey,
       programName,
       major || null,
@@ -319,24 +333,25 @@ app.put('/api/alumni/:id', requireAdmin, async (req, res) => {
 
     const sql = `
       UPDATE alumni SET
-        full_name = ?,
-        batch_year = ?,
-        student_id = ?,
-        college_key = ?,
-        program_name = ?,
-        major = ?,
-        motto = ?,
-        honor = ?,
-        academic_highlights = ?,
-        avatar_url = ?,
-        email = ?,
-        linkedin = ?
-      WHERE id = ?
+        full_name = $1,
+        batch_year = $2,
+        student_id = $3,
+        college_key = $4,
+        program_name = $5,
+        major = $6,
+        motto = $7,
+        honor = $8,
+        academic_highlights = $9,
+        avatar_url = $10,
+        email = $11,
+        linkedin = $12,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $13
     `;
 
-    const [result] = await dbPool.execute(sql, [
+    const { rowCount } = await dbPool.query(sql, [
       fullName,
-      parseInt(batchYear),
+      parseInt(batchYear, 10),
       formattedStudentId,
       collegeKey,
       programName,
@@ -350,7 +365,7 @@ app.put('/api/alumni/:id', requireAdmin, async (req, res) => {
       id
     ]);
 
-    if (result.affectedRows === 0) {
+    if (rowCount === 0) {
       return res.status(404).json({ error: 'Record not found for updating.' });
     }
 
@@ -364,9 +379,9 @@ app.put('/api/alumni/:id', requireAdmin, async (req, res) => {
 app.delete('/api/alumni/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const [result] = await dbPool.execute('DELETE FROM alumni WHERE id = ?', [id]);
+    const { rowCount } = await dbPool.query('DELETE FROM alumni WHERE id = $1', [id]);
 
-    if (result.affectedRows === 0) {
+    if (rowCount === 0) {
       return res.status(404).json({ error: 'Record not found for deletion.' });
     }
 
